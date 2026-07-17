@@ -1,0 +1,16 @@
+# xml demo: read an RSS-style feed.
+import "./main.ecko"
+xml = main
+
+feed = "<rss><channel><title>Ecko News</title><item><title>Release</title><link>https://ecko.sh/1</link></item><item><title>Docs</title><link>https://ecko.sh/2</link></item></channel></rss>"
+doc = xml.parse(feed)
+
+ch_title = xml.text(xml.find(doc, "channel/title")[0])
+items = xml.find(doc, "channel/item")
+print("feed:  {ch_title}")
+print("items: {len(items)}")
+for it in items {
+    t = xml.text(xml.find(it, "title")[0])
+    l = xml.text(xml.find(it, "link")[0])
+    print("  - {t} -> {l}")
+}

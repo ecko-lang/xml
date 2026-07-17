@@ -1,0 +1,48 @@
+# Tests for the xml package - offline, deterministic.
+import std.test
+import "../main.ecko"
+xml = main
+
+RSS = "<rss><channel><title>News</title><item><title>A</title></item><item><title>B</title></item></channel></rss>"
+
+test.case("find by tag returns all descendants", || {
+    doc = xml.parse(RSS)
+    test.eq(len(xml.find(doc, "item")), 2)
+})
+
+test.case("find by path navigates children", || {
+    doc = xml.parse(RSS)
+    items = xml.find(doc, "channel/item")
+    test.eq(len(items), 2)
+    test.eq(xml.text(xml.find(items[0], "title")[0]), "A")
+})
+
+test.case("attributes, case-sensitive", || {
+    doc = xml.parse("<Note id=\"1\" Lang=\"en\">hi</Note>")
+    note = xml.find(doc, "Note")[0]
+    test.eq(note.tag, "Note")
+    test.eq(xml.attr(note, "id"), "1")
+    test.eq(xml.attr(note, "Lang"), "en")
+    test.eq(xml.attr(note, "lang"), null)  # case matters
+})
+
+test.case("text content concatenates", || {
+    doc = xml.parse("<a><b>x</b><b>y</b></a>")
+    test.eq(xml.text(doc), "xy")
+})
+
+test.case("self-closing elements", || {
+    doc = xml.parse("<root><br/><item v=\"1\"/></root>")
+    test.eq(len(xml.find(doc, "br")), 1)
+    test.eq(xml.attr(xml.find(doc, "item")[0], "v"), "1")
+})
+
+test.case("build round-trips a simple tree", || {
+    doc = xml.parse("<a x=\"1\"><b>t</b></a>")
+    test.eq(xml.build(xml.find(doc, "a")[0]), "<a x=\"1\"><b>t</b></a>")
+})
+
+test.case("the XML declaration is skipped", || {
+    doc = xml.parse("<?xml version=\"1.0\"?><root>ok</root>")
+    test.eq(xml.text(doc), "ok")
+})

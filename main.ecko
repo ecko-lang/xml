@@ -1,0 +1,229 @@
+# xml - an XML parser for Ecko.
+#
+#   import xml
+#
+#   doc = xml.parse(rss_source)
+#   xml.find(doc, "channel/item")   # path query (child navigation)
+#   xml.find(doc, "title")          # every <title> descendant
+#   xml.text(node)                  # concatenated text
+#   xml.attr(node, "id")            # attribute value (case-sensitive)
+#   xml.build(node)                 # recompose to an XML string
+#
+# A node is a map: elements are { tag, attrs, children }, text is
+# { tag: "#text", text }, root is { tag: "#root", ... }. Recursive-descent over
+# the character list; case-sensitive, no void elements. Pure; no capabilities.
+# (Exports `find`, which shadows the builtin - but never calls it.)
+
+# ---- small char helpers ----------------------------------------------------
+fn drop_n(l, n) {
+    if n <= 0 { l } else if n >= len(l) { [] } else { reverse(take(reverse(l), len(l) - n)) }
+}
+
+fn slice(cs, a, b) = if b <= a { "" } else { join(take(drop_n(cs, a), b - a), "") }
+
+fn at(cs, i) = if i < len(cs) { cs[i] } else { "" }
+
+fn is_ws(c) = c == " " or c == "\t" or c == "\n" or c == "\r"
+
+fn is_name_char(c) = not (is_ws(c) or c == ">" or c == "/" or c == "=" or c == "<" or c == "?" or c == "")
+
+fn read_name(cs, i) {
+    mut j = i
+    while j < len(cs) and is_name_char(cs[j]) {
+        j = j + 1
+    }
+    [slice(cs, i, j), j]
+}
+
+fn read_text(cs, i) {
+    mut j = i
+    while j < len(cs) and cs[j] != "<" {
+        j = j + 1
+    }
+    [slice(cs, i, j), j]
+}
+
+fn read_attr_value(cs, i) {
+    q = at(cs, i)
+    if q == "\"" or q == "'" {
+        mut j = i + 1
+        while j < len(cs) and cs[j] != q {
+            j = j + 1
+        }
+        [slice(cs, i + 1, j), j + 1]
+    } else {
+        mut j = i
+        while j < len(cs) and not is_ws(cs[j]) and cs[j] != ">" {
+            j = j + 1
+        }
+        [slice(cs, i, j), j]
+    }
+}
+
+# read_attrs(cs, i) -> [attrs, next_i (past ">"), self_close]. Case-preserving.
+fn read_attrs(cs, i) {
+    mut m = empty_map()
+    mut j = i
+    mut sc = false
+    while j < len(cs) and cs[j] != ">" {
+        if is_ws(cs[j]) { j = j + 1 } else if cs[j] == "/" {
+            sc = true
+            j = j + 1
+        } else {
+            nm = read_name(cs, j)
+            name = nm[0]
+            if name == "" { j = j + 1 } else {
+                j = nm[1]
+                while j < len(cs) and is_ws(cs[j]) {
+                    j = j + 1
+                }
+                if at(cs, j) == "=" {
+                    j = j + 1
+                    while j < len(cs) and is_ws(cs[j]) {
+                        j = j + 1
+                    }
+                    v = read_attr_value(cs, j)
+                    m = insert(m, name, v[0])
+                    j = v[1]
+                } else { m = insert(m, name, "") }
+            }
+        }
+    }
+    [m, j + 1, sc]
+}
+
+fn is_comment(cs, i) = slice(cs, i, i + 4) == "<!--"
+
+fn skip_comment(cs, i) {
+    mut j = i + 4
+    while j < len(cs) and slice(cs, j, j + 3) != "-->" {
+        j = j + 1
+    }
+    j + 3
+}
+
+# Skip to and past the next ">" (for <?...?> and <!...> constructs).
+fn skip_to_gt(cs, i) {
+    mut j = i
+    while j < len(cs) and cs[j] != ">" {
+        j = j + 1
+    }
+    j + 1
+}
+
+# parse_element(cs, i) -> [node, next_i]; i at "<". Case-sensitive, no voids.
+fn parse_element(cs, i) {
+    nm = read_name(cs, i + 1)
+    tag = nm[0]
+    a = read_attrs(cs, nm[1])
+    if a[2] { [{ tag: tag, attrs: a[0], children: [] }, a[1]] } else {
+        kids = parse_nodes(cs, a[1])
+        [{ tag: tag, attrs: a[0], children: kids[0] }, kids[1]]
+    }
+}
+
+# parse_nodes(cs, i) -> [children, next_i]; siblings until EOF or a close tag.
+fn parse_nodes(cs, i) {
+    mut children = []
+    mut j = i
+    mut done = false
+    while not done and j < len(cs) {
+        if cs[j] == "<" {
+            if at(cs, j + 1) == "/" {
+                j = skip_to_gt(cs, j + 2)
+                done = true
+            } else if is_comment(cs, j) { j = skip_comment(cs, j) } else if at(cs, j + 1) == "?" or at(cs, j + 1) == "!" { j = skip_to_gt(cs, j + 1) } else {
+                el = parse_element(cs, j)
+                children = push(children, el[0])
+                j = el[1]
+            }
+        } else {
+            t = read_text(cs, j)
+            children = push(children, { tag: "#text", text: t[0] })
+            j = t[1]
+        }
+    }
+    [children, j]
+}
+
+# ---- public API ------------------------------------------------------------
+export fn parse(src) {
+    r = parse_nodes(chars(src), 0)
+    { tag: "#root", attrs: empty_map(), children: r[0] }
+}
+
+export fn text(node) {
+    if get(node, "tag") == "#text" { get(node, "text") } else {
+        mut s = ""
+        for child in get(node, "children") {
+            s = s + text(child)
+        }
+        s
+    }
+}
+
+# Every descendant element with the given tag.
+fn find_desc(node, tag) {
+    mut out = []
+    kids = get(node, "children")
+    if kids != null {
+        for child in kids {
+            if get(child, "tag") == tag { out = push(out, child) }
+            for d in find_desc(child, tag) {
+                out = push(out, d)
+            }
+        }
+    }
+    out
+}
+
+# find(node, path) - a single tag matches descendants; "a/b/c" navigates:
+# the first segment matches descendants, each further segment its children.
+export fn find(node, path) {
+    if not contains(path, "/") { return find_desc(node, path) }
+    segs = split(path, "/")
+    mut current = find_desc(node, segs[0])
+    mut i = 1
+    while i < len(segs) {
+        mut next = []
+        for n in current {
+            for child in get(n, "children") {
+                if get(child, "tag") == segs[i] { next = push(next, child) }
+            }
+        }
+        current = next
+        i = i + 1
+    }
+    current
+}
+
+export fn attr(node, name) {
+    a = get(node, "attrs")
+    if a == null { null } else { get(a, name) }
+}
+
+# build(node) -> an XML string (attrs sorted; empty elements self-close).
+export fn build(node) {
+    tag = get(node, "tag")
+    if tag == "#text" { get(node, "text") } else if tag == "#root" {
+        mut s = ""
+        for c in get(node, "children") {
+            s = s + build(c)
+        }
+        s
+    } else {
+        mut attrs = ""
+        a = get(node, "attrs")
+        for k in sort(keys(a)) {
+            attrs = attrs + " " + k + "=\"" + a[k] + "\""
+        }
+        kids = get(node, "children")
+        if len(kids) == 0 { "<" + tag + attrs + "/>" } else {
+            mut inner = ""
+            for c in kids {
+                inner = inner + build(c)
+            }
+            "<" + tag + attrs + ">" + inner + "</" + tag + ">"
+        }
+    }
+}
