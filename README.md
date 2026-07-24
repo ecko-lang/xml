@@ -1,13 +1,12 @@
-# xml
+# XML - Ecko Std Lib Package
 
 An XML parser for [Ecko](https://ecko.sh), written in Ecko. Parse a document
-into a node tree, query it by tag or path, extract text, and rebuild. Pure — no
-capabilities.
+into a node tree, query it by tag or path, extract text, and rebuild.
 
 ## Install
 
 ```bash
-ecko add https://github.com/ecko-sh/xml
+ecko get github.com/ecko-sh/xml
 ```
 
 ## Usage
@@ -52,4 +51,4 @@ ecko test tests/
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
