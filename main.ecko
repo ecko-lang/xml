@@ -147,11 +147,15 @@ fn parse_nodes(cs, i) {
 }
 
 # ---- public API ------------------------------------------------------------
+## Parse an XML document into a node tree. The root is a `#root` node whose
+## children are the top-level elements; text becomes `#text` nodes.
 export fn parse(src) {
     r = parse_nodes(chars(src), 0)
     { tag: "#root", attrs: empty_map(), children: r[0] }
 }
 
+## All text under a node, concatenated - the element's own text plus every
+## descendant's, in document order. Returns "" for an element with no text.
 export fn text(node) {
     if get(node, "tag") == "#text" { get(node, "text") } else {
         mut s = ""
@@ -177,8 +181,8 @@ fn find_desc(node, tag) {
     out
 }
 
-# find(node, path) - a single tag matches descendants; "a/b/c" navigates:
-# the first segment matches descendants, each further segment its children.
+## find(node, path) - a single tag matches descendants; "a/b/c" navigates:
+## the first segment matches descendants, each further segment its children.
 export fn find(node, path) {
     if not contains(path, "/") { return find_desc(node, path) }
     segs = split(path, "/")
@@ -197,12 +201,13 @@ export fn find(node, path) {
     current
 }
 
+## One attribute's value, or null when the node has no such attribute.
 export fn attr(node, name) {
     a = get(node, "attrs")
     if a == null { null } else { get(a, name) }
 }
 
-# build(node) -> an XML string (attrs sorted; empty elements self-close).
+## build(node) -> an XML string (attrs sorted; empty elements self-close).
 export fn build(node) {
     tag = get(node, "tag")
     if tag == "#text" { get(node, "text") } else if tag == "#root" {
