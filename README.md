@@ -6,7 +6,7 @@ into a node tree, query it by tag or path, extract text, and rebuild.
 ## Install
 
 ```bash
-ecko get github.com/ecko-sh/xml
+ecko get github.com/ecko-lang/xml
 ```
 
 ## Usage
