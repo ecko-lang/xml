@@ -132,7 +132,11 @@ fn parse_nodes(cs, i) {
             if at(cs, j + 1) == "/" {
                 j = skip_to_gt(cs, j + 2)
                 done = true
-            } else if is_comment(cs, j) { j = skip_comment(cs, j) } else if at(cs, j + 1) == "?" or at(cs, j + 1) == "!" { j = skip_to_gt(cs, j + 1) } else {
+            } else if is_comment(cs, j) {
+                j = skip_comment(cs, j)
+            } else if at(cs, j + 1) == "?" or at(cs, j + 1) == "!" {
+                j = skip_to_gt(cs, j + 1)
+            } else {
                 el = parse_element(cs, j)
                 children = push(children, el[0])
                 j = el[1]

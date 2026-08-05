@@ -1,6 +1,6 @@
 {
   "module": "github.com/ecko-lang/xml",
-  "version": "0.9.5",
+  "version": "0.10.1",
   "entrypoint": "main.ecko",
   "description": "An XML parser for Ecko: parse to a node tree, query by tag or path, extract text, and rebuild. Pure - no capabilities.",
   "author": "Sean Nieuwoudt <sean@underwulf.com>",
