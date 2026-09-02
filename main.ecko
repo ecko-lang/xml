@@ -15,11 +15,9 @@
 # (Exports `find`, which shadows the builtin - but never calls it.)
 
 # ---- small char helpers ----------------------------------------------------
-fn drop_n(l, n) {
-    if n <= 0 { l } else if n >= len(l) { [] } else { reverse(take(reverse(l), len(l) - n)) }
-}
-
-fn slice(cs, a, b) = if b <= a { "" } else { join(take(drop_n(cs, a), b - a), "") }
+# A half-open slice of a char list, returned as a string. Named `substr`
+# rather than `slice` so it does not shadow the builtin of that name.
+fn substr(cs, a, b) = if b <= a { "" } else { join(take(drop(cs, a), b - a), "") }
 
 fn at(cs, i) = if i < len(cs) { cs[i] } else { "" }
 
@@ -32,7 +30,7 @@ fn read_name(cs, i) {
     while j < len(cs) and is_name_char(cs[j]) {
         j = j + 1
     }
-    [slice(cs, i, j), j]
+    [substr(cs, i, j), j]
 }
 
 fn read_text(cs, i) {
@@ -40,7 +38,7 @@ fn read_text(cs, i) {
     while j < len(cs) and cs[j] != "<" {
         j = j + 1
     }
-    [slice(cs, i, j), j]
+    [substr(cs, i, j), j]
 }
 
 fn read_attr_value(cs, i) {
@@ -50,13 +48,13 @@ fn read_attr_value(cs, i) {
         while j < len(cs) and cs[j] != q {
             j = j + 1
         }
-        [slice(cs, i + 1, j), j + 1]
+        [substr(cs, i + 1, j), j + 1]
     } else {
         mut j = i
         while j < len(cs) and not is_ws(cs[j]) and cs[j] != ">" {
             j = j + 1
         }
-        [slice(cs, i, j), j]
+        [substr(cs, i, j), j]
     }
 }
 
@@ -92,11 +90,11 @@ fn read_attrs(cs, i) {
     [m, j + 1, sc]
 }
 
-fn is_comment(cs, i) = slice(cs, i, i + 4) == "<!--"
+fn is_comment(cs, i) = substr(cs, i, i + 4) == "<!--"
 
 fn skip_comment(cs, i) {
     mut j = i + 4
-    while j < len(cs) and slice(cs, j, j + 3) != "-->" {
+    while j < len(cs) and substr(cs, j, j + 3) != "-->" {
         j = j + 1
     }
     j + 3
