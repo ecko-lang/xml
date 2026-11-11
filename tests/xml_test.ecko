@@ -1,4 +1,5 @@
 # Tests for the xml package - offline, deterministic.
+import std.str
 import std.test
 import "../main.ecko"
 xml = main
@@ -304,4 +305,70 @@ test.case("limits throw kind 'limit'", fn() {
 
 test.case("a non-string argument is a bug, not a parse error", fn() {
     test.eq(caught(fn() xml.parse(42)).kind, "bug")
+})
+
+# ---- audit fixes (2026-11) -----------------------------------------------------
+
+test.case("a UTF-8 byte order mark is skipped", fn() {
+    doc = xml.parse(str.chr(65279) + "<?xml version=\"1.0\"?><a>x</a>")
+    test.eq(xml.text(doc, "a"), "x")
+    e = caught(fn() xml.parse(str.chr(65279) + "<a>&bad;</a>"))
+    test.eq(e.column, 4)
+})
+
+test.case("max_depth counts self-closing elements", fn() {
+    test.eq(caught(fn() xml.parse("<a/>", max_depth: 0)).limit, "max_depth")
+    test.eq(caught(fn() xml.parse("<a><b/></a>", max_depth: 1)).limit, "max_depth")
+    test.eq(xml.text(xml.parse("<a><b/></a>", max_depth: 2)), "")
+})
+
+test.case("escape and build name the bad argument", fn() {
+    for f in [fn() xml.escape(5), fn() xml.escape(null), fn() xml.unescape(null)] {
+        e = caught(f)
+        test.eq(e.kind, "bug")
+        test.eq(e.reason, "bad_argument")
+    }
+    e = caught(fn() xml.build(el("a", { n: [1] }, [])))
+    test.eq(e.reason, "bad_argument")
+    test.eq(xml.build(el("a", { n: 5, ok: true }, [tx("1")])), "<a n=\"5\" ok=\"true\">1</a>")
+})
+
+test.case(
+    "build refuses names that are not XML names",
+    fn() {
+        for node in [
+            el("a b", {}, []),
+            el("a", { "x\"y": "1" }, []),
+            el("1a", {}, []),
+            el("", {}, []),
+        ] {
+            e = caught(fn() xml.build(node))
+            test.eq(e.kind, "bug")
+            test.eq(e.reason, "bad_name")
+        }
+        test.eq(xml.build(el("s3:Key", { "xml:lang": "en" }, [])), "<s3:Key xml:lang=\"en\"/>")
+    },
+)
+
+test.case("parse refuses what is not well-formed", fn() {
+    test.eq(caught(fn() xml.parse("<1a/>")).reason, "bad_name")
+    test.eq(caught(fn() xml.parse("<a 1x=\"1\"/>")).reason, "bad_name")
+    test.eq(caught(fn() xml.parse("<a x=\"<\"/>")).reason, "bad_tag")
+    test.eq(caught(fn() xml.parse("<a>&#1;</a>")).reason, "bad_char_ref")
+    test.eq(caught(fn() xml.parse("<a>&#xFFFE;</a>")).reason, "bad_char_ref")
+    test.eq(xml.text(xml.parse("<a>&#9;&#xA;&#x1F600;</a>")), "\t\n\u{1f600}")
+})
+
+test.case("an empty or malformed path is a bug, not an empty answer", fn() {
+    doc = xml.parse(RSS)
+    for p in ["", "/a/b", "a//b", "a/"] {
+        e = caught(fn() xml.find(doc, p))
+        test.eq(e.kind, "bug")
+        test.eq(e.reason, "bad_path")
+    }
+    test.eq(caught(fn() xml.find(doc, 5)).reason, "bad_argument")
+    test.eq(caught(fn() xml.find(null, "a")).reason, "bad_argument")
+    test.eq(caught(fn() xml.text("str")).reason, "bad_argument")
+    test.eq(caught(fn() xml.attr(doc, null)).reason, "bad_argument")
+    test.eq(caught(fn() xml.parse(null)).reason, "bad_argument")
 })

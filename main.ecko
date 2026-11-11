@@ -50,13 +50,53 @@ let ATTR = r"""([^\s=]+)\s*=\s*(?:"([^"]*)"|'([^']*)')"""
 
 let HEX = "0123456789abcdef"
 
+# An XML Name (XML 1.0 §2.3): a letter, `_`, `:` or any non-ASCII character,
+# then those plus digits, `-` and `.`.
+let NAME = r"""^[A-Za-z_:\x{80}-\x{10FFFF}][A-Za-z0-9_:.\-\x{80}-\x{10FFFF}]*$"""
+
+fn is_name(s) = re.test(NAME, s)
+
+# A programmer mistake, named at the exported function that was called.
+fn mistake(reason, message) {
+    error({ kind: "bug", reason: reason, message: message })
+}
+
+fn need_string(fname, arg, v) {
+    if not is_string(v) {
+        mistake("bad_argument", "xml.{fname}: {arg} must be a string, got {type_of(v)}")
+    }
+}
+
+fn need_node(fname, node) {
+    if type_of(node) != "map" or not is_string(get(node, "tag")) {
+        mistake(
+            "bad_argument",
+            "xml.{fname}: node must be a node from xml.parse, got {type_of(node)}",
+        )
+    }
+}
+
+# A path is tag segments joined by `/`; an empty segment is a mistake, not a
+# query that matches nothing.
+fn need_path(fname, path) {
+    need_string(fname, "path", path)
+    if path == "" or any(split(path, "/"), fn(seg) seg == "") {
+        mistake(
+            "bad_path",
+            "xml.{fname}: path \"{path}\" has an empty segment; write tags joined by '/', like \"channel/item\"",
+        )
+    }
+}
+
 # ---- errors ----------------------------------------------------------------
 
 # Line and column (both 1-based) of a character offset in `src`.
 fn position(src, offset) {
     prefix = src[..offset]
     nl = str.last_index_of(prefix, "\n")
-    [str.count(prefix, "\n") + 1, offset - nl]
+    # A byte order mark is invisible, so it is not a column.
+    bom = if nl < 0 and starts_with(src, "\u{feff}") { 1 } else { 0 }
+    [str.count(prefix, "\n") + 1, offset - nl - bom]
 }
 
 # Raise a malformed-input error. `reason` is a stable code for programs to
@@ -110,9 +150,13 @@ fn char_ref(body, src, at) {
         v = v * base + d
         if v > 1114111 { fail(src, at, "bad_char_ref", "'&#{body};' is past U+10FFFF") }
     }
-    if v == 0 or v >= 55296 and v <= 57343 {
-        fail(src, at, "bad_char_ref", "'&#{body};' is not a character XML allows")
-    }
+    allowed = v == 9 or
+        v == 10 or
+        v == 13 or
+        v >= 32 and v <= 55295 or
+        v >= 57344 and v <= 65533 or
+        v >= 65536
+    if not allowed { fail(src, at, "bad_char_ref", "'&#{body};' is not a character XML allows") }
     str.chr(v)
 }
 
@@ -170,6 +214,10 @@ fn parse_attrs(run, src, at) {
     if run == "" { return m }
     for p in re.captures_all(ATTR, run) {
         name = p[1]
+        if not is_name(name) { fail(src, at, "bad_name", "'{name}' is not a valid attribute name") }
+        if contains(p[2] + p[3], "<") {
+            fail(src, at, "bad_tag", "attribute '{name}' contains '<'; write '&lt;'")
+        }
         if has(m, name) { fail(src, at, "duplicate_attribute", "attribute '{name}' appears twice") }
         # Only one of the two quote groups took part; the other is "".
         m = insert(m, name, unescape_in(p[2] + p[3], src, at))
@@ -190,30 +238,32 @@ fn unterminated(t, src, at) {
     fail(src, at, "unterminated", what)
 }
 
-## Parse an XML document into a node tree. The root is a `#root` node whose
-## children are the top-level elements; text becomes `#text` nodes, with the
-## five predefined entities (`&amp;` `&lt;` `&gt;` `&quot;` `&apos;`) and
-## numeric references (`&#65;`, `&#x41;`) decoded. CDATA content becomes a
-## `#text` node verbatim. Comments, processing instructions, the `<?xml ?>`
-## declaration and a plain `<!DOCTYPE>` are skipped.
+## Parse an XML document into a node tree rooted at a `#root` node.
 ##
-## Malformed input throws `{ kind: "parse", format: "xml", reason, message,
-## offset, line, column }`; `reason` is one of `unterminated`, `bad_tag`,
-## `mismatched_tag`, `unexpected_close`, `unclosed`, `duplicate_attribute`,
-## `bad_entity`, `unknown_entity`, `bad_char_ref`, `doctype_subset`,
-## `bad_declaration`, `text_outside_root` or `no_root`. A DOCTYPE with an
-## internal subset (`[...]`) is refused rather than expanded.
+## The root's children are the top-level elements; text becomes `#text`
+## nodes, with the five predefined entities (`&amp;` `&lt;` `&gt;` `&quot;`
+## `&apos;`) and numeric references (`&#65;`, `&#x41;`) decoded. CDATA content
+## becomes a `#text` node verbatim. Comments, processing instructions, the
+## `<?xml ?>` declaration, a plain `<!DOCTYPE>` and a leading byte order mark
+## are skipped. A DOCTYPE with an internal subset (`[...]`) is refused rather
+## than expanded.
 ##
-## Input over `max_size` characters, or nesting deeper than `max_depth`
-## elements, throws `{ kind: "limit", limit: "max_size" | "max_depth", max, ... }`.
+## `max_size` is in characters and is checked before parsing; `max_depth`
+## caps element nesting, self-closing elements included.
+##
+## errors: `parse` (with `format: "xml"`, `reason`, `offset`, `line`,
+## `column`) for malformed input - `reason` is one of `unterminated`,
+## `bad_tag`, `bad_name`, `mismatched_tag`, `unexpected_close`, `unclosed`,
+## `duplicate_attribute`, `bad_entity`, `unknown_entity`, `bad_char_ref`,
+## `doctype_subset`, `bad_declaration`, `text_outside_root` or `no_root`;
+## `limit` (with `limit: "max_size"` or `"max_depth"` and `max`) over a
+## ceiling; `bug`/`bad_argument` when `src` is not a string.
 ##
 ## example:
 ##   doc = xml.parse("<a><b>x &amp; y</b></a>")
 ##   xml.text(doc, "b")   # "x & y"
 export fn parse(src, max_depth = 256, max_size = 16777216) {
-    if not is_string(src) {
-        error({ kind: "bug", message: "xml.parse expects a string, got {type_of(src)}" })
-    }
+    need_string("parse", "src", src)
     size = len(src)
     if size > max_size {
         error(
@@ -232,9 +282,12 @@ export fn parse(src, max_depth = 256, max_size = 16777216) {
     mut attrs_at = [{}]
     mut opened = [0]
     mut depth = 0
-    mut pos = 0
+    # A UTF-8 byte order mark (common from .NET and Windows services) is not
+    # content; skipping it keeps every offset counted from the real start.
+    bom = starts_with(src, "\u{feff}")
+    mut pos = if bom { 1 } else { 0 }
     mut elements = 0
-    for t in re.find_all(TOKEN, src) {
+    for t in re.find_all(TOKEN, if bom { src[1..] } else { src }) {
         at = pos
         pos += len(t)
         mut node = null
@@ -299,9 +352,24 @@ export fn parse(src, max_depth = 256, max_size = 16777216) {
                 )
             }
             name = m[1]
+            if not is_name(name) {
+                fail(src, at, "bad_name", "'<{name}' is not a valid element name")
+            }
             attrs = parse_attrs(m[2], src, at)
             elements += 1
-            if m[3] == "/" { node = { tag: name, attrs: attrs, children: [] } } else {
+            if m[3] == "/" {
+                # A self-closing element is as deep as one with content.
+                if depth + 1 > max_depth {
+                    over_limit(
+                        src,
+                        at,
+                        "max_depth",
+                        max_depth,
+                        "elements nest deeper than max_depth {max_depth}",
+                    )
+                }
+                node = { tag: name, attrs: attrs, children: [] }
+            } else {
                 depth += 1
                 if depth > max_depth {
                     over_limit(
@@ -408,11 +476,25 @@ fn text_of(node) {
     join(parts, "")
 }
 
-## find(node, path) - a single tag matches descendants; "a/b/c" navigates:
-## the first segment matches descendants, each further segment its children.
-## Always returns a list, in document order; `[]` when nothing matches.
-## Tags compare exactly, namespace prefix included (`s3:Key` is not `Key`).
+## Every element matching `path`, in document order; `[]` when nothing matches.
+##
+## A single tag matches all descendants; `"a/b/c"` navigates: the first
+## segment matches descendants, each further segment their children. Tags
+## compare exactly, namespace prefix included (`s3:Key` is not `Key`).
+##
+## errors: `bug`/`bad_path` for an empty path or an empty segment (`"a//b"`,
+## `"/a"`); `bug`/`bad_argument` when `node` is not a node or `path` is not a
+## string.
+##
+## example:
+##   xml.find(doc, "channel/item")   # every <item> child of a <channel>
 export fn find(node, path) {
+    need_node("find", node)
+    need_path("find", path)
+    find_in(node, path)
+}
+
+fn find_in(node, path) {
     if not contains(path, "/") { return descendants(node, path, false) }
     segs = split(path, "/")
     mut current = descendants(node, segs[0], false)
@@ -428,46 +510,82 @@ export fn find(node, path) {
     current
 }
 
-## find_all(node, path) - the same list `find` returns, under the name that
-## reads clearly beside `find_one`.
-export fn find_all(node, path) = find(node, path)
+## The same list `find` returns, under the name that reads clearly beside
+## `find_one`.
+##
+## errors: as `find`.
+##
+## example:
+##   xml.find_all(doc, "Contents")
+export fn find_all(node, path) {
+    need_node("find_all", node)
+    need_path("find_all", path)
+    find_in(node, path)
+}
 
-## find_one(node, path) - the first match of `find(node, path)`, or null.
+## The first match of `find(node, path)`, or null.
+##
 ## A bare tag stops at the first match instead of collecting them all.
+##
+## errors: as `find`.
 ##
 ## example:
 ##   token = xml.find_one(doc, "NextContinuationToken")
 export fn find_one(node, path) {
-    if not contains(path, "/") { return first(descendants(node, path, true)) }
-    first(find(node, path))
+    need_node("find_one", node)
+    need_path("find_one", path)
+    first_match(node, path)
 }
 
-## text(node) - all text under a node, concatenated: the element's own text
-## plus every descendant's, in document order. Returns "" for an element
-## with no text.
+fn first_match(node, path) {
+    if not contains(path, "/") { return first(descendants(node, path, true)) }
+    first(find_in(node, path))
+}
+
+## All text under a node, concatenated in document order; `""` for none.
 ##
-## text(node, path) - the text of `find_one(node, path)`, or null when
-## nothing matches. This is the S3 shape: `xml.text(item, "Key")`.
+## With a `path`, the text of `find_one(node, path)`, or null when nothing
+## matches. That is the S3 shape: `xml.text(item, "Key")`.
+##
+## errors: as `find` when a `path` is given; `bug`/`bad_argument` when `node`
+## is not a node.
+##
+## example:
+##   xml.text(xml.parse("<a><b>x &amp; y</b></a>"), "b")   # "x & y"
 export fn text(node, path = null) {
+    need_node("text", node)
     if path == null { return text_of(node) }
-    hit = find_one(node, path)
+    need_path("text", path)
+    hit = first_match(node, path)
     if hit == null { null } else { text_of(hit) }
 }
 
 ## One attribute's value, or null when the node has no such attribute.
+##
+## Names are case-sensitive and compared as written, prefix included.
+##
+## errors: `bug`/`bad_argument` when `node` is not a node or `name` is not a string.
+##
+## example:
+##   xml.attr(xml.find_one(doc, "item"), "id")
 export fn attr(node, name) {
+    need_node("attr", node)
+    need_string("attr", "name", name)
     a = get(node, "attrs")
     if a == null { null } else { get(a, name) }
 }
 
 # ---- escaping and building -------------------------------------------------
 
-## escape(s) - replace `&`, `<`, `>`, `"` and `'` with their entities, so `s`
-## is safe as element text or as a quoted attribute value.
+## `s` with `&`, `<`, `>`, `"` and `'` replaced by their entities, safe as
+## element text or as a quoted attribute value.
+##
+## errors: `bug`/`bad_argument` when `s` is not a string.
 ##
 ## example:
 ##   "<Key>" + xml.escape("a&b.txt") + "</Key>"   # "<Key>a&amp;b.txt</Key>"
 export fn escape(s) {
+    need_string("escape", "s", s)
     if not (contains(s, "&") or contains(s, "<") or contains(s, ">") or contains(s, "\"") or contains(s, "'")) {
         return s
     }
@@ -482,11 +600,36 @@ export fn escape(s) {
     )
 }
 
-## unescape(s) - decode the five predefined entities and numeric character
-## references in `s`. An unknown or unterminated entity throws the same
-## `{ kind: "parse", format: "xml", ... }` error `parse` does, with the
-## offset into `s`.
-export fn unescape(s) = unescape_in(s, s, 0)
+## `s` with the five predefined entities and numeric character references
+## decoded.
+##
+## errors: `parse` (format `xml`, with `reason` and the offset into `s`) for
+## an unknown or unterminated entity, as `parse` throws;
+## `bug`/`bad_argument` when `s` is not a string.
+##
+## example:
+##   xml.unescape("R&amp;D &#65;")   # "R&D A"
+export fn unescape(s) {
+    need_string("unescape", "s", s)
+    unescape_in(s, s, 0)
+}
+
+# A text or attribute value as a string. Numbers and Bools are written as
+# they print; anything else in a tree handed to `build` is a mistake.
+fn scalar_text(what, v) {
+    kind = type_of(v)
+    if kind == "string" { return v }
+    if kind == "int" or kind == "float" or kind == "bool" or kind == "decimal" { return string(v) }
+    mistake("bad_argument", "xml.build: {what} must be a string, number or Bool, got {kind}")
+}
+
+fn need_name(what, name) {
+    unless is_string(name) and is_name(name) {
+        mistake("bad_name", "xml.build: {what} {fmt_name(name)} is not an XML name")
+    }
+}
+
+fn fmt_name(v) = if is_string(v) { "\"" + v + "\"" } else { type_of(v) }
 
 fn escape_text(s) = if contains(s, "&") or contains(s, "<") or contains(s, ">") {
     replace(replace(replace(s, "&", "&amp;"), "<", "&lt;"), ">", "&gt;")
@@ -496,23 +639,44 @@ fn escape_text(s) = if contains(s, "&") or contains(s, "<") or contains(s, ">") 
 
 fn escape_attr(s) = replace(escape_text(s), "\"", "&quot;")
 
-## build(node) -> an XML string (attrs sorted; empty elements self-close).
-## Text is escaped (`&`, `<`, `>`) and attribute values also escape `"`, so
-## the output parses back to the same tree.
+## The node and everything under it as an XML string.
+##
+## Attributes are sorted and empty elements self-close. Text is escaped
+## (`&`, `<`, `>`) and attribute values also escape `"`, so the output parses
+## back to the same tree. Int, Float, Decimal and Bool values are written as
+## they print.
+##
+## errors: `bug`/`bad_name` when a tag or attribute name is not an XML name
+## (which would otherwise let a name inject markup); `bug`/`bad_argument` when
+## `node` is not a node or a value is not a string, number or Bool.
+##
+## example:
+##   xml.build({ tag: "a", attrs: { id: 1 }, children: [{ tag: "#text", text: "x<y" }] })   # "<a id=\"1\">x&lt;y</a>"
 export fn build(node) {
+    need_node("build", node)
+    build_node(node)
+}
+
+fn build_node(node) {
     tag = get(node, "tag")
-    if tag == "#text" { escape_text(get(node, "text")) } else {
+    if tag == "#text" { escape_text(scalar_text("text", get(node, "text"))) } else {
         kids = get(node, "children") ?? []
         mut parts = []
         for c in kids {
-            parts = push(parts, build(c))
+            need_node("build", c)
+            parts = push(parts, build_node(c))
         }
         inner = join(parts, "")
         if tag == "#root" { inner } else {
+            need_name("tag", tag)
             mut attrs = []
             a = get(node, "attrs") ?? {}
             for k in sort(keys(a)) {
-                attrs = push(attrs, " " + k + "=\"" + escape_attr(a[k]) + "\"")
+                need_name("attribute name", k)
+                attrs = push(
+                    attrs,
+                    " " + k + "=\"" + escape_attr(scalar_text("attribute {k}", a[k])) + "\"",
+                )
             }
             open = "<" + tag + join(attrs, "")
             if len(kids) == 0 { open + "/>" } else { open + ">" + inner + "</" + tag + ">" }
